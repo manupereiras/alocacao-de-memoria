@@ -1,6 +1,6 @@
 package com.memoriaallocation;
 
-import javax.management.timer.Timer;
+import javax.swing.Timer;
 import javax.swing.*;
 import java.awt.*;
 import java.util.*;
@@ -244,8 +244,7 @@ public class MemoryAllocationSimulator extends JFrame {
         });
 
         // Atualização em tempo real com Timer
-        Timer timer = new Timer();
-        timer.start(); // Inicia o temporizador para atualização em tempo real
+        new Timer(1000, e -> repaint()).start(); // atualiza o painel a cada 1 segundo
 
         pack();
         setDefaultCloseOperation(EXIT_ON_CLOSE);
