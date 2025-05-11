@@ -64,6 +64,9 @@ public class MemoryAllocationSimulator extends JFrame {
         processPanel.add(resetButton);
         simulateIOButton = new JButton("Simular E/S bloqueante");
         processPanel.add(simulateIOButton);
+        JButton executeButton = new JButton("Executar Processo");
+        processPanel.add(executeButton);
+
         inputPanel.add(processPanel);
 
         JPanel strategyPanel = new JPanel();
@@ -166,6 +169,80 @@ public class MemoryAllocationSimulator extends JFrame {
             }).start();
         });
 
+
+        executeButton.addActionListener(e -> {
+            if (processes.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Nenhum processo pronto para executar.");
+                return;
+            }
+
+            Optional<Process> optionalProcess = processes.stream()
+                    .filter(p -> p.estado == Estado.Pronto)
+                    .findAny();
+
+            if (optionalProcess.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Nenhum processo no estado PRONTO.");
+                return;
+            }
+
+            Process p = optionalProcess.get();
+            p.estado = Estado.Executando;
+            updateStatusList(statusListModel);
+            repaint();
+
+            new Thread(() -> {
+                try {
+                    Thread.sleep(3000);  // Simula tempo de execução
+                } catch (InterruptedException ex) {
+                    ex.printStackTrace();
+                }
+
+                p.estado = Estado.Finalizado;
+
+                // Libera memória
+                for (MemoryBlock block : memoryBlocks) {
+                    if (block.process == p) {
+                        block.clear();
+                    }
+                }
+
+                // Remove páginas associadas ao processo
+                pageTable.removeIf(pg -> pg.process == p);
+
+                // Atualizações de UI
+                SwingUtilities.invokeLater(() -> {
+                    updateStatusList(statusListModel);
+                    updateMemoryStatus();
+                    repaint();
+
+                    // Tenta alocar processos da fila de espera
+                    if (!processWaitingQueue.isEmpty()) {
+                        Process next = processWaitingQueue.remove(0);
+                        next.estado = Estado.Pronto;
+                        String strategy = (String) strategyComboBox.getSelectedItem();
+                        boolean success = switch (strategy) {
+                            case "First Fit" -> allocateFirstFit(next);
+                            case "Best Fit" -> allocateBestFit(next);
+                            case "Worst Fit" -> allocateWorstFit(next);
+                            case "Next Fit" -> allocateNextFit(next);
+                            default -> false;
+                        };
+
+                        if (success) {
+                            processListModel.addElement(next.toString());
+                        } else {
+                            next.estado = Estado.Bloqueado;
+                            processWaitingQueue.add(next); // volta para a fila
+                        }
+
+                        updateStatusList(statusListModel);
+                        updateMemoryStatus();
+                        repaint();
+                    }
+                });
+            }).start();
+        });
+
         // Atualização em tempo real com Timer
         Timer timer = new Timer();
         timer.start(); // Inicia o temporizador para atualização em tempo real
@@ -176,12 +253,15 @@ public class MemoryAllocationSimulator extends JFrame {
         setVisible(true);
     }
 
+
+
     private void updateStatusList(DefaultListModel<String> statusListModel) {
         statusListModel.clear();
         for (Process p : processes) {
-            statusListModel.addElement(p.toString());
+            statusListModel.addElement(p.toString());  // Exibe o contador de falhas de página
         }
     }
+
 
     private boolean allocateFirstFit(Process p) {
         for (MemoryBlock block : memoryBlocks) {
@@ -269,16 +349,23 @@ public class MemoryAllocationSimulator extends JFrame {
     }
 
     // Função para gerenciar falhas de página
+    // Função para gerenciar falhas de página
     private void handlePageFault(Process p) {
-        p.pageFaultCount++;
-        // Aqui podemos implementar a lógica de carregamento de páginas
-        // Exemplo de lógica de substituição FIFO
-        if (pageTable.size() > 0) {
-            // Substituir a página mais antiga
-            Page pageToRemove = pageTable.remove(0);
-            System.out.println("Página substituída: " + pageToRemove.id);
+        p.pageFaultCount++;  // Incrementa o contador de falhas de página
+        System.out.println("Falha de página no processo " + p.name);
+
+        // Verifica se há espaço na tabela de páginas
+        if (pageTable.size() < 10) {  // Supondo que temos um número máximo de 10 páginas na memória
+            // Carrega a nova página
+            pageTable.add(new Page(pageTable.size(), p));
+        } else {
+            // Substituição de página (FIFO)
+            Page pageToRemove = pageTable.remove(0);  // Remove a página mais antiga
+            System.out.println("Substituindo: " + pageToRemove);
+            pageTable.add(new Page(pageTable.size(), p));  // Adiciona a nova página
+
+            // Aqui podemos implementar outras estratégias de substituição, como LRU
         }
-        pageTable.add(new Page(pageTable.size(), p));
     }
 
     public static void main(String[] args) {
@@ -308,13 +395,13 @@ public class MemoryAllocationSimulator extends JFrame {
         }
     }
 
-    static class Process {
+    class Process {
         String name;
         int size;
         boolean blocked = false;
         Estado estado;
         int priority;
-        int pageFaultCount = 0; // Contador de falhas de página
+        int pageFaultCount = 0;  // Contador de falhas de página
 
         Process(String name, int size) {
             this.name = name;
@@ -324,17 +411,42 @@ public class MemoryAllocationSimulator extends JFrame {
         }
 
         public String toString() {
-            return name + " (" + size + "KB)" + "[" + estado + "]" + " Prioridade: " + priority + "," + " Falhas de Página: " + pageFaultCount;
+            return name + " (" + size + "KB)" + "[" + estado + "]" + " Prioridade: " + priority + ", Falhas de Página: " + pageFaultCount;
+        }
+
+        // Simula o acesso a uma página
+        public void accessPage(int pageId) {
+            // Verifica se a página está na memória
+            boolean pageFound = false;
+            for (Page p : pageTable) {
+                if (p.process == this && p.id == pageId) {
+                    pageFound = true;
+                    break;
+                }
+            }
+
+            // Se não encontrar a página, é uma falha de página
+            if (!pageFound) {
+                handlePageFault(this);  // Chama a função de falha de página
+            }
         }
     }
+
 
     static class Page {
         int id;
         Process process;
+        long timestamp;  // Para LRU (opcional, pode ser usado para tempo de acesso)
 
         Page(int id, Process process) {
             this.id = id;
             this.process = process;
+            this.timestamp = System.currentTimeMillis();  // Captura o momento de criação
+        }
+
+        public String toString() {
+            return "Página " + id + " do Processo " + process.name;
         }
     }
+
 }
