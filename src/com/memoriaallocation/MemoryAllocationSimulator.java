@@ -1,11 +1,10 @@
 package com.memoriaallocation;
 
+import javax.management.timer.Timer;
 import javax.swing.*;
 import java.awt.*;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.*;
 import java.util.List;
-import java.util.Random;
 
 public class MemoryAllocationSimulator extends JFrame {
     private final JComboBox<String> strategyComboBox;
@@ -16,7 +15,13 @@ public class MemoryAllocationSimulator extends JFrame {
     private final JButton allocateButton, resetButton, simulateIOButton;
     private final JTextField nameField, sizeField;
     private final JLabel memoryStatusLabel;
+    private final List<Page> pageTable; // Tabela de páginas
+    private final List<Process> processWaitingQueue; // Fila de processos esperando alocação
     private int nextFitIndex = 0;
+
+    enum Estado {
+        Novo, Pronto, Executando, Bloqueado, Finalizado
+    }
 
     public MemoryAllocationSimulator() {
         super("Simulador de Alocação de Memória");
@@ -36,6 +41,13 @@ public class MemoryAllocationSimulator extends JFrame {
                 new MemoryBlock(4, 300),
                 new MemoryBlock(5, 350)
         ));
+
+        pageTable = new ArrayList<>();  // Inicializa a tabela de páginas
+        processWaitingQueue = new ArrayList<>(); // Fila de espera de processos
+
+        DefaultListModel<String> statusListModel = new DefaultListModel<>();
+        JList<String> statusList = new JList<>(statusListModel);
+        add(new JScrollPane(statusList), BorderLayout.WEST);
 
         // Painel de Entrada
         JPanel inputPanel = new JPanel(new GridLayout(2, 1));
@@ -94,6 +106,7 @@ public class MemoryAllocationSimulator extends JFrame {
             String strategy = (String) strategyComboBox.getSelectedItem();
             Process p = new Process(name, size);
             processes.add(p);
+            p.estado = Estado.Pronto;
 
             boolean success = switch (strategy) {
                 case "First Fit" -> allocateFirstFit(p);
@@ -105,9 +118,18 @@ public class MemoryAllocationSimulator extends JFrame {
 
             if (success) {
                 processListModel.addElement(p.toString());
+                updateStatusList(statusListModel);
                 repaint();
             } else {
-                JOptionPane.showMessageDialog(this, "Não foi possível alocar o processo.");
+                // Aviso de que não há mais memória disponível
+                JOptionPane.showMessageDialog(this, "Não há blocos suficientes de memória para alocar o processo. Processo colocado em espera.");
+
+                // Coloca o processo em espera
+                processWaitingQueue.add(p); // Adiciona à fila de espera
+                p.estado = Estado.Bloqueado; // Marca o estado do processo como "Bloqueado"
+
+                updateStatusList(statusListModel);
+                repaint();
             }
             updateMemoryStatus();
         });
@@ -116,6 +138,7 @@ public class MemoryAllocationSimulator extends JFrame {
             processes.clear();
             processListModel.clear();
             memoryBlocks.forEach(MemoryBlock::clear);
+            pageTable.clear();  // Limpar tabela de páginas
             nextFitIndex = 0;
             updateMemoryStatus();
             repaint();
@@ -129,20 +152,35 @@ public class MemoryAllocationSimulator extends JFrame {
             new Thread(() -> {
                 Process p = processes.get(new Random().nextInt(processes.size()));
                 p.blocked = true;
+                p.estado = Estado.Bloqueado;
+                updateStatusList(statusListModel);
                 repaint();
                 try {
                     Thread.sleep(3000); // Simula espera E/S
                 } catch (InterruptedException ignored) {
                 }
                 p.blocked = false;
+                p.estado = Estado.Executando;
+                updateStatusList(statusListModel);
                 repaint();
             }).start();
         });
+
+        // Atualização em tempo real com Timer
+        Timer timer = new Timer();
+        timer.start(); // Inicia o temporizador para atualização em tempo real
 
         pack();
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
         setVisible(true);
+    }
+
+    private void updateStatusList(DefaultListModel<String> statusListModel) {
+        statusListModel.clear();
+        for (Process p : processes) {
+            statusListModel.addElement(p.toString());
+        }
     }
 
     private boolean allocateFirstFit(Process p) {
@@ -204,8 +242,8 @@ public class MemoryAllocationSimulator extends JFrame {
     private void drawMemoryBlocks(Graphics g) {
         int y = 20;
         for (MemoryBlock block : memoryBlocks) {
-            g.setColor(block.process == null ? Color.LIGHT_GRAY : (
-                    block.process.blocked ? Color.ORANGE : Color.GREEN));
+            g.setColor(block.process == null ? Color.LIGHT_GRAY :
+                    (block.process.blocked ? Color.ORANGE : Color.GREEN));
             g.fillRect(50, y, 200, 40);
             g.setColor(Color.BLACK);
             g.drawRect(50, y, 200, 40);
@@ -228,6 +266,19 @@ public class MemoryAllocationSimulator extends JFrame {
         }
         int freeMemory = totalMemory - usedMemory;
         memoryStatusLabel.setText("Memória: Total: " + totalMemory + "KB | Ocupados: " + usedMemory + "KB | Livre: " + freeMemory + "KB");
+    }
+
+    // Função para gerenciar falhas de página
+    private void handlePageFault(Process p) {
+        p.pageFaultCount++;
+        // Aqui podemos implementar a lógica de carregamento de páginas
+        // Exemplo de lógica de substituição FIFO
+        if (pageTable.size() > 0) {
+            // Substituir a página mais antiga
+            Page pageToRemove = pageTable.remove(0);
+            System.out.println("Página substituída: " + pageToRemove.id);
+        }
+        pageTable.add(new Page(pageTable.size(), p));
     }
 
     public static void main(String[] args) {
@@ -261,14 +312,29 @@ public class MemoryAllocationSimulator extends JFrame {
         String name;
         int size;
         boolean blocked = false;
+        Estado estado;
+        int priority;
+        int pageFaultCount = 0; // Contador de falhas de página
 
         Process(String name, int size) {
             this.name = name;
             this.size = size;
+            this.estado = Estado.Novo;
+            this.priority = new Random().nextInt(10) + 1;
         }
 
         public String toString() {
-            return name + " (" + size + "KB)" + (blocked ? " [BLOQUEADO]" : "");
+            return name + " (" + size + "KB)" + "[" + estado + "]" + " Prioridade: " + priority + "," + " Falhas de Página: " + pageFaultCount;
+        }
+    }
+
+    static class Page {
+        int id;
+        Process process;
+
+        Page(int id, Process process) {
+            this.id = id;
+            this.process = process;
         }
     }
 }
